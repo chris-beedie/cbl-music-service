@@ -1,114 +1,82 @@
-# project/api/users.py
+# project/api/managers/user_manager.py
 
-
-from flask import Blueprint, jsonify, request
-from sqlalchemy import exc
-
-from project.api.utils import authenticate, is_admin
+# import project.api.models.user
 from project.api.models import User
 from project import db
+from sqlalchemy import exc
+
+def get_active_by_id(id):
+
+    user = User.query.get(id)
+
+    if user and user.active and not user.disabled:
+        return user
 
 
-users_blueprint = Blueprint('users', __name__)
+def get_by_email(email):
+
+    return User.query.filter_by(email=email).first()
 
 
-@users_blueprint.route('/ping', methods=['GET'])
-def ping_pong():
-    return jsonify({
-        'status': 'success',
-        'message': 'pong!'
-    })
+def get_active_by_email(email):
+
+    user = User.query.filter_by(email=email).first()
+
+    if user and user.active and not user.disabled:
+        return user
 
 
-@users_blueprint.route('/users', methods=['POST'])
-@authenticate
-def add_user(resp):
-    if not is_admin(resp):
-        response_object = {
-            'status': 'error!',
-            'message': 'You do not have permission to do that.'
-        }
-        return jsonify(response_object), 401
-    post_data = request.get_json()
-    if not post_data:
-        response_object = {
-            'status': 'fail',
-            'message': 'Invalid payload.'
-        }
-        return jsonify(response_object), 400
-    username = post_data.get('username')
-    email = post_data.get('email')
-    password = post_data.get('password')
-    try:
-        user = User.query.filter_by(email=email).first()
+def try_log_in(email, password):
+
+    user = get_active_by_email(email)
+
+    if user and user.check_password(password):
+        return user
+
+
+def register_invite(invited_by, email):
+
+    user = User.query.filter_by(email=email).first()
+    active, disabled = False, False
+
+    if user:
+        active = user.active
+        disabled = user.disabled
+
+    if not active and not disabled:
         if not user:
-            db.session.add(User(
-                username=username,
-                email=email,
-                password=password))
-            db.session.commit()
-            response_object = {
-                'status': 'success',
-                'message': f'{email} was added!'
-            }
-            return jsonify(response_object), 201
+            user = User(username=email,
+                        email=email,
+                        invited_by=invited_by
+                        )
+            user.pw_hash = "NOT SET"
+            db.session.add(user)
         else:
-            response_object = {
-                'status': 'fail',
-                'message': 'Sorry. That email already exists.'
-            }
-            return jsonify(response_object), 400
-    except (exc.IntegrityError, ValueError) as e:
-        db.session().rollback()
-        response_object = {
-            'status': 'fail',
-            'message': 'Invalid payload.'
-        }
-        return jsonify(response_object), 400
+            user.invited_by = invited_by
+
+        db.session.commit()
+
+    return active, disabled
 
 
-@users_blueprint.route('/users/<user_id>', methods=['GET'])
-def get_single_user(user_id):
-    """Get single user details"""
-    response_object = {
-        'status': 'fail',
-        'message': 'User does not exist'
-    }
+def update_user(user, username=None, password=None, active=None, disabled=None):
+
+    if username:
+        user.username = username
+
+    if password:
+        user.set_password(password)
+
+    if active:
+        user.active = active
+
+    if disabled:
+        user.disabled = disabled
+
     try:
-        user = User.query.filter_by(id=int(user_id)).first()
-        if not user:
-            return jsonify(response_object), 404
-        else:
-            response_object = {
-                'status': 'success',
-                'data': {
-                  'username': user.username,
-                  'email': user.email,
-                  'created_at': user.created_at
-                }
-            }
-            return jsonify(response_object), 200
-    except ValueError:
-        return jsonify(response_object), 404
+        db.session.commit()
+    except (exc.IntegrityError):
+        db.session.rollback()
+        raise ValueError('Username already in use')
 
-
-@users_blueprint.route('/users', methods=['GET'])
-def get_all_users():
-    """Get all users"""
-    users = User.query.order_by(User.created_at.desc()).all()
-    users_list = []
-    for user in users:
-        user_object = {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'created_at': user.created_at
-        }
-        users_list.append(user_object)
-    response_object = {
-        'status': 'success',
-        'data': {
-          'users': users_list
-        }
-    }
-    return jsonify(response_object), 200
+    return user

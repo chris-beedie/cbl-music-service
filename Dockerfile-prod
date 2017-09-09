@@ -10,7 +10,7 @@ RUN apt-get update -yqq \
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
 
-# add requirements (to leverage Docker cache)
+# add requirements
 ADD ./requirements.txt /usr/src/app/requirements.txt
 
 # install requirements

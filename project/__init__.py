@@ -1,18 +1,20 @@
 # project/__init__.py
 
-
 import os
+import sys
 
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flask_jwt_extended import JWTManager
 from flask_bcrypt import Bcrypt
 
 
 # instantiate the extentions
 db = SQLAlchemy()
 migrate = Migrate()
+jwt = JWTManager()
 bcrypt = Bcrypt()
 
 
@@ -32,11 +34,12 @@ def create_app():
     db.init_app(app)
     bcrypt.init_app(app)
     migrate.init_app(app, db)
+    jwt.init_app(app)
 
     # register blueprints
-    from project.api.users import users_blueprint
+    from project.api.sanity import sanity_blueprint
     from project.api.auth import auth_blueprint
     app.register_blueprint(auth_blueprint)
-    app.register_blueprint(users_blueprint)
+    app.register_blueprint(sanity_blueprint)
 
     return app

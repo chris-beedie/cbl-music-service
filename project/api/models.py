@@ -1,61 +1,67 @@
 # project/api/models.py
 
+from flask import current_app as app
 
-import datetime
+from datetime import datetime
 
-import jwt
-from flask import current_app
-
-from project import db, bcrypt
+from project import db
+from project.api.crypto import verify_hash, create_hash
 
 
 class User(db.Model):
-    __tablename__ = "users"
+    __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    username = db.Column(db.String(128), unique=True, nullable=False)
+    username = db.Column(db.String(128), unique=True, nullable=True)
     email = db.Column(db.String(128), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
-    active = db.Column(db.Boolean, default=True, nullable=False)
-    admin = db.Column(db.Boolean, default=False, nullable=False)
+    pw_hash = db.Column(db.String(255), nullable=False)
+    active = db.Column(db.Boolean, default=False, nullable=False)
+    disabled = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
+    last_login = db.Column(db.DateTime, nullable=True)
+    invited_by = db.Column(db.Integer, nullable=True)
+    cbl_member = db.Column(db.Boolean, default=False, nullable=False)
 
-    def __init__(
-            self, username, email, password,
-            created_at=datetime.datetime.utcnow()):
+    def set_password(self, password):
+
+        min_length = app.config['PASSWORD_MIN_LEN']
+        if len(password) < min_length:
+            raise ValueError('password must be at least {} characters'.format(min_length))
+
+        self.pw_hash = create_hash(password)
+
+    def __init__(self,
+                 username,
+                 email,
+                 id=None,
+                 password=None,
+                 active=False,
+                 disabled=False,
+                 created_at=datetime.utcnow(),
+                 last_login=None,
+                 invited_by=None,
+                 cbl_member=False):
+
+        if not (id or password or invited_by):
+            raise ValueError('id, password or invited_by must be set')
+
+        if id:
+            self.id = id
+
         self.username = username
         self.email = email
-        self.password = bcrypt.generate_password_hash(
-            password, current_app.config.get('BCRYPT_LOG_ROUNDS')
-        ).decode()
+        self.active = active
+        self.disabled = disabled
         self.created_at = created_at
+        self.last_login = last_login
+        self.invited_by = invited_by
+        self.cbl_member = cbl_member
 
-    def encode_auth_token(self, user_id):
-        """Generates the auth token"""
-        try:
-            payload = {
-                'exp': datetime.datetime.utcnow() + datetime.timedelta(
-                    days=current_app.config.get('TOKEN_EXPIRATION_DAYS'),
-                    seconds=current_app.config.get('TOKEN_EXPIRATION_SECONDS')
-                ),
-                'iat': datetime.datetime.utcnow(),
-                'sub': user_id
-            }
-            return jwt.encode(
-                payload,
-                current_app.config.get('SECRET_KEY'),
-                algorithm='HS256'
-            )
-        except Exception as e:
-            return e
+        if password:
+            self.set_password(password)
+        else:
+            active = False
 
-    @staticmethod
-    def decode_auth_token(auth_token):
-        """Decodes the auth token - :param auth_token: - :return: integer|string"""
-        try:
-            payload = jwt.decode(
-                auth_token, current_app.config.get('SECRET_KEY'))
-            return payload['sub']
-        except jwt.ExpiredSignatureError:
-            return 'Signature expired. Please log in again.'
-        except jwt.InvalidTokenError:
-            return 'Invalid token. Please log in again.'
+    def check_password(self, password):
+        return verify_hash(password, self.pw_hash)
+
+    

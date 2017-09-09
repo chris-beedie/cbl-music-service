@@ -14,9 +14,11 @@ class BaseTestCase(TestCase):
         return app
 
     def setUp(self):
+        self.client.cookies = None
         db.create_all()
         db.session.commit()
 
     def tearDown(self):
+        self.client.cookies = None
         db.session.remove()
         db.drop_all()

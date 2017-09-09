@@ -1,129 +1,224 @@
 # project/api/auth.py
 
-
 from flask import Blueprint, jsonify, request
-from sqlalchemy import exc, or_
+from flask import current_app as app
 
-from project.api.utils import authenticate
-from project.api.models import User
-from project import db, bcrypt
+from project.api.utils import requires_post_data
+from project.api.crypto import encode_url_token, decode_url_token
+from project.api.email import send_password_reset, send_invite
+from project.api.users import get_by_email, get_active_by_email, try_log_in, \
+    register_invite, update_user
+
+from project.api.jwt import authenticated, \
+    authenticated_fresh_cbl, authenticated_refresh, \
+    current_user, set_login_jwt, set_refresh_jwt, logout_jwt
+
+auth_blueprint = Blueprint('auth', __name__, url_prefix='/auth')
 
 
-auth_blueprint = Blueprint('auth', __name__)
+@auth_blueprint.route('/login', methods=['POST'])
+@requires_post_data
+def login():
 
+    data = request.get_json()
+    email = data.get('email', None)
+    password = data.get('password', None)
 
-@auth_blueprint.route('/auth/register', methods=['POST'])
-def register_user():
-    print('here')
-    # get post data
-    post_data = request.get_json()
-    if not post_data:
-        response_object = {
-            'status': 'error',
-            'message': 'Invalid payload.'
-        }
-        return jsonify(response_object), 400
-    username = post_data.get('username')
-    email = post_data.get('email')
-    password = post_data.get('password')
     try:
-        # check for existing user
-        user = User.query.filter(
-            or_(User.username == username, User.email==email)).first()
-        if not user:
-            # add new user to db
-            new_user = User(
-                username=username,
-                email=email,
-                password=password
-            )
-            db.session.add(new_user)
-            db.session.commit()
-            # generate auth token
-            auth_token = new_user.encode_auth_token(new_user.id)
-            response_object = {
-                'status': 'success',
-                'message': 'Successfully registered.',
-                'auth_token': auth_token.decode()
-            }
-            return jsonify(response_object), 201
-        else:
-            response_object = {
-                'status': 'error',
-                'message': 'Sorry. That user already exists.'
-            }
-            return jsonify(response_object), 400
-    # handler errors
-    except (exc.IntegrityError, ValueError) as e:
-        db.session().rollback()
-        response_object = {
-            'status': 'error',
-            'message': 'Invalid payload.'
-        }
-        return jsonify(response_object), 400
+        if email and password:
 
+            user = try_log_in(email, password)
 
-@auth_blueprint.route('/auth/login', methods=['POST'])
-def login_user():
-    # get post data
-    post_data = request.get_json()
-    if not post_data:
-        response_object = {
-            'status': 'error',
-            'message': 'Invalid payload.'
-        }
-        return jsonify(response_object), 400
-    email = post_data.get('email')
-    password = post_data.get('password')
-    try:
-        # fetch the user data
-        user = User.query.filter_by(email=email).first()
-        if user and bcrypt.check_password_hash(user.password, password):
-            auth_token = user.encode_auth_token(user.id)
-            if auth_token:
-                response_object = {
-                    'status': 'success',
-                    'message': 'Successfully logged in.',
-                    'auth_token': auth_token.decode()
-                }
-                return jsonify(response_object), 200
-        else:
-            response_object = {
-                'status': 'error',
-                'message': 'User does not exist.'
-            }
-            return jsonify(response_object), 404
+            if user:
+                resp = jsonify({'login': True})
+                set_login_jwt(user, resp)
+                return resp, 200
+
+        return jsonify({'login': False}), 401
+
     except Exception as e:
         print(e)
-        response_object = {
-            'status': 'error',
-            'message': 'Try again.'
-        }
-        return jsonify(response_object), 500
+        return jsonify({'login': False}), 401
 
 
-@auth_blueprint.route('/auth/logout', methods=['GET'])
-@authenticate
-def logout_user(resp):
-    response_object = {
-        'status': 'success',
-        'message': 'Successfully logged out.'
-    }
-    return jsonify(response_object), 200
+@auth_blueprint.route('/refresh', methods=['POST'])
+@authenticated_refresh
+def refresh():
+    # Create the new access token
+    resp = jsonify({'refresh': True})
+    set_refresh_jwt(current_user, resp)
+    return resp, 200
 
 
-@auth_blueprint.route('/auth/status', methods=['GET'])
-@authenticate
-def get_user_status(resp):
-    user = User.query.filter_by(id=resp).first()
-    response_object = {
-        'status': 'success',
-        'data': {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'active': user.active,
-            'created_at': user.created_at
-        }
-    }
-    return jsonify(response_object), 200
+@auth_blueprint.route('/logout', methods=['POST'])
+@authenticated
+def logout():
+
+    resp = jsonify({'logout': True})
+    logout_jwt(request, resp)
+    return resp, 200
+
+
+@auth_blueprint.route('/createinvite', methods=['POST'])
+@requires_post_data
+@authenticated_fresh_cbl
+def create_invite():
+
+    data = request.get_json()
+    email = data.get('email', None)
+    name = data.get('name', None)
+    message = data.get('message', None)
+    suppress_email = data.get('suppress_email', None)
+
+    if not email or not name:
+        return jsonify({'msg': 'Invalid Data'}), 400
+
+    token = encode_url_token('invite', email)
+
+    active, disabled = register_invite(invited_by=current_user.id,
+                                       email=email
+                                       )
+    if disabled:
+        return jsonify({'msg': 'User banned!'}), 403
+    if active:
+        return jsonify({'msg': 'User already exists'}), 409
+
+    if not suppress_email:
+        send_invite(invited_by_username=current_user.username,
+                    invited_by_email=current_user.email,
+                    email=email,
+                    name=name,
+                    message=message if message else '',
+                    token=token)
+
+    return jsonify({'msg': 'Invite sent'}), 200
+
+
+@auth_blueprint.route('/activate', methods=['GET', 'POST'])
+@requires_post_data
+def activate():
+
+    token = request.args.get('id')
+
+    if not token:
+        return jsonify({'msg': 'Invalid Data'}), 400
+
+    expired, invalid, action, email = decode_url_token(token)
+
+    if expired:
+        return jsonify({'msg': 'token expired'}), 400
+    elif invalid:
+        return jsonify({'msg': 'token invalid'}), 400
+    elif action != 'invite':
+        return jsonify({'msg': 'action mismatch'}), 400
+
+    user = get_by_email(email)
+
+    if not user:
+        return jsonify({'msg': 'email mismatch'}), 400
+
+    if user.active:
+        return jsonify({'msg': 'account already active'}), 400
+
+    if user.disabled:
+        return jsonify({'msg': 'account disabled'}), 400
+
+    if request.method == 'GET':
+        return jsonify({'token': token}), 200
+
+    data = request.get_json()
+    post_email = data.get('email', None)
+    username = data.get('username', None)
+    password = data.get('password', None)
+
+    if post_email != email:
+        return jsonify({'msg': 'email mismatch'}), 400
+
+    try:
+        update_user(user, username=username, password=password, active=True)
+        return jsonify({'msg': 'Account activated'}), 200
+    except ValueError as e:
+        return jsonify({'msg': str(e)}), 400
+
+
+@auth_blueprint.route('/changepassword', methods=['POST'])
+@authenticated
+@requires_post_data
+def change_password():
+
+    logout_jwt(request, jsonify({'msg': 'edd'}))
+
+    data = request.get_json()
+    old_password = data.get('old_password', None)
+    new_password = data.get('new_password', None)
+
+    user = try_log_in(current_user.email, old_password)
+
+    if not user:
+        return jsonify({'msg': 'Incorrect password'}), 401
+
+    try:
+        update_user(user, password=new_password)
+        return jsonify({'msg': 'Password changed successfully'}), 200
+    except ValueError as e:
+        return jsonify({'msg': str(e)}), 400
+
+
+@auth_blueprint.route('/forgotpassword', methods=['POST'])
+@requires_post_data
+def forgot_password():
+
+    data = request.get_json()
+    email = data.get('email', None)
+
+    if not email:
+        return jsonify({'msg': 'Invalid Data'}), 400
+
+    user = get_active_by_email(email)
+
+    if user:
+
+        token = encode_url_token('password', email)
+        send_password_reset(email, user.username, token)
+
+    return jsonify({'msg': 'If it was recognised, an email was sent to the address provided'}), 200
+
+
+@auth_blueprint.route('/resetpassword', methods=['GET', 'POST'])
+@requires_post_data
+def reset_password():
+
+    token = request.args.get('id')
+
+    if not token:
+        return jsonify({'msg': 'Invalid Data'}), 400
+
+    expired, invalid, action, email = decode_url_token(token)
+
+    if expired:
+        return jsonify({'msg': 'token expired'}), 400
+    elif invalid:
+        return jsonify({'msg': 'token invalid'}), 400
+    elif action != 'password':
+        return jsonify({'msg': 'action mismatch'}), 400
+
+    user = get_active_by_email(email)
+
+    if not user:
+        return jsonify({'msg': 'email mismatch'}), 400
+
+    if request.method == 'GET':
+        return jsonify({'token': token}), 200
+
+    data = request.get_json()
+    post_email = data.get('email', None)
+    password = data.get('password', None)
+
+    if post_email != email:
+        return jsonify({'msg': 'email mismatch'}), 400
+
+    try:
+        update_user(user, password=password)
+        return jsonify({'msg': 'Password changed successfully'}), 200
+    except ValueError as e:
+        return jsonify({'msg': str(e)}), 400
