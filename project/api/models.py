@@ -18,16 +18,9 @@ class User(db.Model):
     disabled = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
     last_login = db.Column(db.DateTime, nullable=True)
+    last_access = db.Column(db.DateTime, nullable=True)
     invited_by = db.Column(db.Integer, nullable=True)
     cbl_member = db.Column(db.Boolean, default=False, nullable=False)
-
-    def set_password(self, password):
-
-        min_length = app.config['PASSWORD_MIN_LEN']
-        if len(password) < min_length:
-            raise ValueError('password must be at least {} characters'.format(min_length))
-
-        self.pw_hash = create_hash(password)
 
     def __init__(self,
                  username,
@@ -38,6 +31,7 @@ class User(db.Model):
                  disabled=False,
                  created_at=datetime.utcnow(),
                  last_login=None,
+                 last_access=None,
                  invited_by=None,
                  cbl_member=False):
 
@@ -53,6 +47,7 @@ class User(db.Model):
         self.disabled = disabled
         self.created_at = created_at
         self.last_login = last_login
+        self.last_access = last_access
         self.invited_by = invited_by
         self.cbl_member = cbl_member
 
@@ -64,4 +59,10 @@ class User(db.Model):
     def check_password(self, password):
         return verify_hash(password, self.pw_hash)
 
-    
+    def set_password(self, password):
+
+        min_length = app.config['PASSWORD_MIN_LEN']
+        if len(password) < min_length:
+            raise ValueError('password must be at least {} characters'.format(min_length))
+
+        self.pw_hash = create_hash(password)

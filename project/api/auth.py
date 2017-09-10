@@ -1,5 +1,7 @@
 # project/api/auth.py
 
+from datetime import datetime
+
 from flask import Blueprint, jsonify, request
 from flask import current_app as app
 
@@ -32,6 +34,7 @@ def login():
             if user:
                 resp = jsonify({'login': True})
                 set_login_jwt(user, resp)
+                update_user(user, last_login=datetime.utcnow(), last_access=datetime.utcnow())
                 return resp, 200
 
         return jsonify({'login': False}), 401
@@ -47,6 +50,7 @@ def refresh():
     # Create the new access token
     resp = jsonify({'refresh': True})
     set_refresh_jwt(current_user, resp)
+    update_user(current_user, last_access=datetime.utcnow())
     return resp, 200
 
 
@@ -146,8 +150,6 @@ def activate():
 @requires_post_data
 def change_password():
 
-    logout_jwt(request, jsonify({'msg': 'edd'}))
-
     data = request.get_json()
     old_password = data.get('old_password', None)
     new_password = data.get('new_password', None)
@@ -159,7 +161,9 @@ def change_password():
 
     try:
         update_user(user, password=new_password)
-        return jsonify({'msg': 'Password changed successfully'}), 200
+        resp = jsonify({'msg': 'Password changed successfully'})
+        logout_jwt(request, resp)
+        return resp, 200
     except ValueError as e:
         return jsonify({'msg': str(e)}), 400
 

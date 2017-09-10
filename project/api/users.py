@@ -5,6 +5,9 @@ from project.api.models import User
 from project import db
 from sqlalchemy import exc
 
+from sqlalchemy import inspect
+
+
 def get_active_by_id(id):
 
     user = User.query.get(id)
@@ -59,7 +62,16 @@ def register_invite(invited_by, email):
     return active, disabled
 
 
-def update_user(user, username=None, password=None, active=None, disabled=None):
+def update_user(user,
+                username=None,
+                password=None,
+                active=None,
+                disabled=None,
+                last_login=None,
+                last_access=None):
+
+    if inspect(user).transient:  # if user was constructed from jwt claim, need to add to db session
+        user = User.query.get(user.id)
 
     if username:
         user.username = username
@@ -72,6 +84,12 @@ def update_user(user, username=None, password=None, active=None, disabled=None):
 
     if disabled:
         user.disabled = disabled
+
+    if last_login:
+        user.last_login = last_login
+
+    if last_access:
+        user.last_access = last_access
 
     try:
         db.session.commit()
